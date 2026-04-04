@@ -1,0 +1,203 @@
+Sub GenerateCombinedWeeklySummary()
+    Dim shtNames As Variant, planCols As Variant, actualCols As Variant
+    shtNames = Array("PP", "PS", "SST")
+    ' 조건에 맞춘 PLAN 날짜 열 (PP: AH, PS: AG, SST: X)
+    planCols = Array("AH", "AG", "X")
+    ' 조건에 맞춘 ACTUAL 날짜 열 (PP: R, PS: R, SST: N)
+    actualCols = Array("R", "R", "N")
+    
+    ' --- 1. X축 고정 기간 설정 (3월 1일 ~ 6월 30일) ---
+    Dim targetYear As Integer: targetYear = 2026
+    Dim startDate As Date, endDate As Date
+    startDate = DateSerial(targetYear, 3, 1)
+    endDate = DateSerial(targetYear, 6, 30)
+    
+    ' 시작일이 포함된 주의 월요일 계산
+    Dim startMonday As Date
+    startMonday = startDate - Weekday(startDate, vbMonday) + 1
+    
+    ' 고정된 X축(주차) 배열 생성
+    Dim arrWeeks() As Date
+    Dim wCount As Integer: wCount = 0
+    Dim curDate As Date: curDate = startMonday
+    
+    Do While curDate <= endDate
+        wCount = wCount + 1
+        curDate = curDate + 7
+    Loop
+    
+    ReDim arrWeeks(0 To wCount - 1)
+    curDate = startMonday
+    Dim wIdx As Integer
+    For wIdx = 0 To wCount - 1
+        arrWeeks(wIdx) = curDate
+        curDate = curDate + 7
+    Next wIdx
+    ' ---------------------------------------------------
+
+    Dim wsSummary As Worksheet
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    ' 기존 통합 시트 삭제 및 생성
+    On Error Resume Next
+    ThisWorkbook.Sheets("Combined Summary").Delete
+    On Error GoTo 0
+    
+    Set wsSummary = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wsSummary.Name = "Combined Summary"
+    
+    Dim outRow As Long: outRow = 1
+    Dim missingSheets As String: missingSheets = ""
+    
+    Dim i As Long, r As Long, lastRow As Long
+    Dim blockName As String, planDate As Variant, actualDate As Variant
+    Dim planWeek As Date, actualWeek As Date
+    
+    ' PP, PS, SST 순서대로 처리
+    For i = LBound(shtNames) To UBound(shtNames)
+        Dim wsData As Worksheet
+        Set wsData = Nothing
+        
+        ' 시트명 앞뒤 공백 무시
+        Dim s As Worksheet
+        For Each s In ThisWorkbook.Sheets
+            If Trim(UCase(s.Name)) = Trim(UCase(shtNames(i))) Then
+                Set wsData = s
+                Exit For
+            End If
+        Next s
+        
+        If wsData Is Nothing Then
+            missingSheets = missingSheets & shtNames(i) & " "
+        Else
+            Dim dict As Object
+            Set dict = CreateObject("Scripting.Dictionary")
+            
+            lastRow = wsData.Cells(wsData.Rows.Count, "C").End(xlUp).Row
+            
+            ' 2. 데이터 수집
+            For r = 2 To lastRow
+                blockName = Trim(CStr(wsData.Cells(r, "C").Value))
+                
+                ' [수정된 부분] 빈칸, "BLOCK" 문자열, 그리고 "3" 같은 단순 숫자는 제외합니다.
+                If blockName <> "" And UCase(blockName) <> "BLOCK" And Not IsNumeric(blockName) Then
+                    If Not dict.exists(blockName) Then
+                        Set dict(blockName) = CreateObject("Scripting.Dictionary")
+                        Set dict(blockName)("PLAN") = CreateObject("Scripting.Dictionary")
+                        Set dict(blockName)("ACTUAL") = CreateObject("Scripting.Dictionary")
+                    End If
+                    
+                    ' PLAN 날짜
+                    planDate = wsData.Cells(r, planCols(i)).Value
+                    If Not IsError(planDate) Then
+                        If IsDate(planDate) Then
+                            planWeek = CDate(planDate) - Weekday(CDate(planDate), vbMonday) + 1
+                            dict(blockName)("PLAN")(planWeek) = dict(blockName)("PLAN")(planWeek) + 1
+                        End If
+                    End If
+                    
+                    ' ACTUAL 날짜
+                    actualDate = wsData.Cells(r, actualCols(i)).Value
+                    If Not IsError(actualDate) Then
+                        If IsDate(actualDate) Then
+                            actualWeek = CDate(actualDate) - Weekday(CDate(actualDate), vbMonday) + 1
+                            dict(blockName)("ACTUAL")(actualWeek) = dict(blockName)("ACTUAL")(actualWeek) + 1
+                        End If
+                    End If
+                End If
+            Next r
+            
+            ' 3. 표 생성 로직
+            If dict.Count > 0 Then
+                ' 블록명 정렬
+                Dim arrBlocks() As String
+                ReDim arrBlocks(0 To dict.Count - 1)
+                Dim b As Variant, bIdx As Long: bIdx = 0
+                For Each b In dict.keys
+                    arrBlocks(bIdx) = b
+                    bIdx = bIdx + 1
+                Next b
+                
+                Dim x As Long, y As Long, tempStr As String
+                For x = LBound(arrBlocks) To UBound(arrBlocks) - 1
+                    For y = x + 1 To UBound(arrBlocks)
+                        If arrBlocks(x) > arrBlocks(y) Then
+                            tempStr = arrBlocks(x)
+                            arrBlocks(x) = arrBlocks(y)
+                            arrBlocks(y) = tempStr
+                        End If
+                    Next y
+                Next x
+                
+                ' 헤더 (X축)
+                wsSummary.Cells(outRow, 1).Value = shtNames(i) & " Block"
+                wsSummary.Cells(outRow, 2).Value = "Type"
+                For x = LBound(arrWeeks) To UBound(arrWeeks)
+                    wsSummary.Cells(outRow, x + 3).Value = Format(arrWeeks(x), "m/d") & " ~ " & Format(arrWeeks(x) + 6, "m/d")
+                Next x
+                
+                Dim startRow As Long: startRow = outRow
+                outRow = outRow + 1
+                
+                ' 데이터 (Y축)
+                For x = LBound(arrBlocks) To UBound(arrBlocks)
+                    blockName = arrBlocks(x)
+                    
+                    ' PLAN
+                    wsSummary.Cells(outRow, 1).Value = blockName
+                    wsSummary.Cells(outRow, 2).Value = "PLAN"
+                    For y = LBound(arrWeeks) To UBound(arrWeeks)
+                        If dict(blockName)("PLAN").exists(arrWeeks(y)) Then
+                            wsSummary.Cells(outRow, y + 3).Value = dict(blockName)("PLAN")(arrWeeks(y))
+                        Else
+                            wsSummary.Cells(outRow, y + 3).Value = 0
+                        End If
+                    Next y
+                    outRow = outRow + 1
+                    
+                    ' ACTUAL
+                    wsSummary.Cells(outRow, 1).Value = ""
+                    wsSummary.Cells(outRow, 2).Value = "ACTUAL"
+                    For y = LBound(arrWeeks) To UBound(arrWeeks)
+                        If dict(blockName)("ACTUAL").exists(arrWeeks(y)) Then
+                            wsSummary.Cells(outRow, y + 3).Value = dict(blockName)("ACTUAL")(arrWeeks(y))
+                        Else
+                            wsSummary.Cells(outRow, y + 3).Value = 0
+                        End If
+                    Next y
+                    outRow = outRow + 1
+                Next x
+                
+                ' 서식
+                Dim dataRange As Range
+                Set dataRange = wsSummary.Range(wsSummary.Cells(startRow, 1), wsSummary.Cells(outRow - 1, UBound(arrWeeks) + 3))
+                
+                dataRange.Borders.LineStyle = xlContinuous
+                wsSummary.Range(wsSummary.Cells(startRow, 1), wsSummary.Cells(startRow, UBound(arrWeeks) + 3)).Interior.Color = RGB(220, 230, 241)
+                wsSummary.Range(wsSummary.Cells(startRow, 1), wsSummary.Cells(startRow, UBound(arrWeeks) + 3)).Font.Bold = True
+                dataRange.HorizontalAlignment = xlCenter
+                
+                For x = startRow + 1 To outRow - 1 Step 2
+                    wsSummary.Range(wsSummary.Cells(x, 1), wsSummary.Cells(x + 1, 1)).Merge
+                    wsSummary.Range(wsSummary.Cells(x, 1), wsSummary.Cells(x + 1, 1)).VerticalAlignment = xlCenter
+                    
+                    wsSummary.Range(wsSummary.Cells(x, 2), wsSummary.Cells(x, UBound(arrWeeks) + 3)).Interior.Color = RGB(226, 239, 218)
+                    wsSummary.Range(wsSummary.Cells(x + 1, 2), wsSummary.Cells(x + 1, UBound(arrWeeks) + 3)).Interior.Color = RGB(242, 242, 242)
+                Next x
+                
+                outRow = outRow + 1
+            End If
+        End If
+    Next i
+    
+    wsSummary.Columns.AutoFit
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    If missingSheets <> "" Then
+        MsgBox "데이터 확인 불가 시트: [" & missingSheets & "]", vbExclamation, "작업 완료"
+    Else
+        MsgBox "오류값 수정 완료! PP, PS, SST (3~6월) 표가 성공적으로 생성되었습니다.", vbInformation, "작업 완료"
+    End If
+End Sub
