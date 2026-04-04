@@ -1,0 +1,220 @@
+Sub CreateAllDashboards()
+    Dim wsSum As Worksheet, wsBlockDash As Worksheet, wsOverallDash As Worksheet
+    Dim lastRowSum As Long, lastColSum As Long
+    Dim dict As Object
+    Dim r As Long, i As Long, fRow As Long
+    Dim blockName As String
+    Dim numWeeks As Long, endRow As Long
+    Dim dStr As String, firstDateStr As String, colLetter As String
+    Dim realDate As Date, wkNum As Integer
+    
+    ' "Combined Summary" 시트 확인
+    On Error Resume Next
+    Set wsSum = ThisWorkbook.Sheets("Combined Summary")
+    On Error GoTo 0
+    
+    If wsSum Is Nothing Then
+        MsgBox "Combined Summary 시트를 찾을 수 없습니다.", vbCritical
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    ' ---------------------------------------------------------
+    ' PART 1. Black Dashboard (블록별 선택형 대시보드)
+    ' ---------------------------------------------------------
+    On Error Resume Next
+    ThisWorkbook.Sheets("Black Dashboard").Delete
+    On Error GoTo 0
+    
+    Set wsBlockDash = ThisWorkbook.Sheets.Add(Before:=wsSum)
+    wsBlockDash.Name = "Black Dashboard"
+    
+    ' 고유 블록 추출 및 드롭다운 설정
+    Set dict = CreateObject("Scripting.Dictionary")
+    lastRowSum = wsSum.Cells(wsSum.Rows.Count, "B").End(xlUp).Row
+    For r = 1 To lastRowSum
+        blockName = Trim(wsSum.Cells(r, 1).Value)
+        If blockName <> "" And InStr(UCase(blockName), "BLOCK") = 0 Then
+            If Not dict.exists(blockName) Then dict.Add blockName, 1
+        End If
+    Next r
+    wsBlockDash.Cells(1, "AA").Resize(dict.Count, 1).Value = Application.Transpose(dict.keys)
+    
+    wsBlockDash.Range("C2").Value = "조회할 블록 선택 ➡"
+    wsBlockDash.Range("D2").Interior.Color = RGB(255, 242, 204)
+    With wsBlockDash.Range("D2").Validation
+        .Delete
+        .Add Type:=xlValidateList, Formula1:="=$AA$1:$AA$" & dict.Count
+    End With
+    wsBlockDash.Range("D2").Value = dict.keys()(0)
+    
+    ' 계산 테이블 및 차트 생성
+    Call SetupDashboardData(wsSum, wsBlockDash, True)
+    Call CreateThreeCharts(wsBlockDash, "Block별 통합 현황")
+    
+    ' ---------------------------------------------------------
+    ' PART 2. Overall Dashboard (전체 주차별 현황 대시보드)
+    ' ---------------------------------------------------------
+    On Error Resume Next
+    ThisWorkbook.Sheets("Overall Dashboard").Delete
+    On Error GoTo 0
+    
+    Set wsOverallDash = ThisWorkbook.Sheets.Add(After:=wsBlockDash)
+    wsOverallDash.Name = "Overall Dashboard"
+    
+    ' 전체 현황 데이터 및 차트 생성
+    Call SetupDashboardData(wsSum, wsOverallDash, False)
+    Call CreateThreeCharts(wsOverallDash, "Project 전체 현황 (Overall)")
+    
+    ' ---------------------------------------------------------
+    ' 마무리
+    ' ---------------------------------------------------------
+    wsBlockDash.Activate
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    MsgBox "Black & Overall Dashboard 생성이 완료되었습니다!" & vbCrLf & "그래프 색상이 연한 파란색(PLAN)과 연한 빨간색(ACTUAL)으로 적용되었습니다.", vbInformation
+End Sub
+
+' 시트별 데이터 테이블 셋업 서브루틴
+Sub SetupDashboardData(wsSource As Worksheet, wsTarget As Worksheet, isBlockWise As Boolean)
+    Dim lastCol As Long, numWeeks As Long, endRow As Long, i As Long, fRow As Long
+    Dim dStr As String, firstDateStr As String, colLetter As String
+    Dim realDate As Date, wkNum As Integer
+    
+    wsTarget.Range("A10:F10").Value = Array("기간", "주차 (Week)", "Weekly PLAN", "Weekly ACTUAL", "Cumul PLAN", "Cumul ACTUAL")
+    wsTarget.Range("A10:F10").Interior.Color = RGB(220, 230, 241)
+    wsTarget.Range("A10:F10").Font.Bold = True
+    wsTarget.Range("A10:F10").Borders.LineStyle = xlContinuous
+    
+    lastCol = wsSource.Cells(1, Columns.Count).End(xlToLeft).Column
+    numWeeks = lastCol - 2
+    endRow = 10 + numWeeks
+    
+    For i = 3 To lastCol
+        dStr = wsSource.Cells(1, i).Value
+        fRow = 10 + i - 2
+        wsTarget.Cells(fRow, 1).Value = dStr
+        
+        ' 주차(W) 변환
+        firstDateStr = Replace(Trim(Split(dStr, "~")(0)), "-", "/")
+        On Error Resume Next
+        realDate = DateValue("2026/" & firstDateStr)
+        If Err.Number <> 0 Then realDate = DateValue(firstDateStr)
+        On Error GoTo 0
+        wkNum = Application.WorksheetFunction.IsoWeekNum(realDate)
+        wsTarget.Cells(fRow, 2).Value = "W" & wkNum
+        
+        colLetter = Split(wsSource.Cells(1, i).Address, "$")(1)
+        
+        If isBlockWise Then
+            ' 특정 블록 합계
+            wsTarget.Cells(fRow, 3).Formula = "=SUMIF('Combined Summary'!$A$1:$A$5000, $D$2, 'Combined Summary'!$" & colLetter & "$1:$" & colLetter & "$5000)"
+            wsTarget.Cells(fRow, 4).Formula = "=SUMIF('Combined Summary'!$A$1:$A$5000, $D$2, 'Combined Summary'!$" & colLetter & "$2:$" & colLetter & "$5001)"
+        Else
+            ' 전체 블록 합계
+            wsTarget.Cells(fRow, 3).Formula = "=SUMIF('Combined Summary'!$B$1:$B$5000, ""PLAN"", 'Combined Summary'!$" & colLetter & "$1:$" & colLetter & "$5000)"
+            wsTarget.Cells(fRow, 4).Formula = "=SUMIF('Combined Summary'!$B$1:$B$5000, ""ACTUAL"", 'Combined Summary'!$" & colLetter & "$1:$" & colLetter & "$5000)"
+        End If
+        
+        ' 누적 계산
+        If fRow = 11 Then
+            wsTarget.Cells(fRow, 5).Formula = "=C11": wsTarget.Cells(fRow, 6).Formula = "=D11"
+        Else
+            wsTarget.Cells(fRow, 5).Formula = "=E" & fRow - 1 & "+C" & fRow
+            wsTarget.Cells(fRow, 6).Formula = "=F" & fRow - 1 & "+D" & fRow
+        End If
+    Next i
+    
+    wsTarget.Range("A11:F" & endRow).Borders.LineStyle = xlContinuous
+    wsTarget.Range("A11:F" & endRow).HorizontalAlignment = xlCenter
+    wsTarget.Columns("A:F").AutoFit
+End Sub
+
+' 시트별 3종 차트 생성 서브루틴 (색상 변경 적용)
+Sub CreateThreeCharts(ws As Worksheet, titlePrefix As String)
+    Dim chtObj As ChartObject, cht As Chart, lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    ' 1. S-Curve
+    Set chtObj = ws.ChartObjects.Add(Left:=ws.Range("H2").Left, Top:=ws.Range("H2").Top, Width:=380, Height:=220)
+    Set cht = chtObj.Chart
+    cht.ChartType = xlLineMarkers
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Cumul PLAN"
+        .XValues = ws.Range("B11:B" & lastRow)
+        .Values = ws.Range("E11:E" & lastRow)
+        .Format.Line.ForeColor.RGB = RGB(157, 195, 230) ' ★ 연한 파란색
+    End With
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Cumul ACTUAL"
+        .Values = ws.Range("F11:F" & lastRow)
+        .Format.Line.ForeColor.RGB = RGB(255, 153, 153) ' ★ 연한 빨간색
+    End With
+    
+    cht.HasTitle = True
+    cht.ChartTitle.Text = titlePrefix & " - 누적 S-Curve"
+
+    ' 2. Weekly 막대
+    Set chtObj = ws.ChartObjects.Add(Left:=ws.Range("P2").Left, Top:=ws.Range("P2").Top, Width:=380, Height:=220)
+    Set cht = chtObj.Chart
+    cht.ChartType = xlColumnClustered
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Weekly PLAN"
+        .XValues = ws.Range("B11:B" & lastRow)
+        .Values = ws.Range("C11:C" & lastRow)
+        .Format.Fill.ForeColor.RGB = RGB(157, 195, 230) ' ★ 연한 파란색
+    End With
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Weekly ACTUAL"
+        .Values = ws.Range("D11:D" & lastRow)
+        .Format.Fill.ForeColor.RGB = RGB(255, 153, 153) ' ★ 연한 빨간색
+    End With
+    
+    cht.HasTitle = True
+    cht.ChartTitle.Text = titlePrefix & " - 주간 물량"
+
+    ' 3. Master 콤보
+    Set chtObj = ws.ChartObjects.Add(Left:=ws.Range("H16").Left, Top:=ws.Range("H16").Top, Width:=760, Height:=280)
+    Set cht = chtObj.Chart
+    cht.ChartType = xlColumnClustered
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Weekly PLAN"
+        .XValues = ws.Range("B11:B" & lastRow)
+        .Values = ws.Range("C11:C" & lastRow)
+        .Format.Fill.ForeColor.RGB = RGB(157, 195, 230) ' ★ 연한 파란색
+    End With
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Weekly ACTUAL"
+        .Values = ws.Range("D11:D" & lastRow)
+        .Format.Fill.ForeColor.RGB = RGB(255, 153, 153) ' ★ 연한 빨간색
+    End With
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Cumul PLAN"
+        .Values = ws.Range("E11:E" & lastRow)
+        .ChartType = xlLineMarkers
+        .AxisGroup = 2
+        .Format.Line.ForeColor.RGB = RGB(157, 195, 230) ' ★ 연한 파란색
+    End With
+    
+    With cht.SeriesCollection.NewSeries
+        .Name = "Cumul ACTUAL"
+        .Values = ws.Range("F11:F" & lastRow)
+        .ChartType = xlLineMarkers
+        .AxisGroup = 2
+        .Format.Line.ForeColor.RGB = RGB(255, 153, 153) ' ★ 연한 빨간색
+    End With
+    
+    cht.HasTitle = True
+    cht.ChartTitle.Text = titlePrefix & " - Master Dashboard"
+    ActiveWindow.DisplayGridlines = False
+End Sub
